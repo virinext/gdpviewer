@@ -16,6 +16,9 @@
 #include <QSettings>
 #include <QMenu>
 #include <QMenuBar>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QHeaderView>
 
 MainWindow::MainWindow(QWidget *parent, Qt::WindowFlags flags):
 	QMainWindow(parent, flags)
@@ -48,9 +51,13 @@ MainWindow::MainWindow(QWidget *parent, Qt::WindowFlags flags):
 }
 
 
-MainWindow::~MainWindow()
+void MainWindow::closeEvent(QCloseEvent *pevent)
 {
-	saveCustomData();
+  saveCustomData();
+  
+  m_break = true;
+
+  QWidget::closeEvent(pevent);
 }
 
 void MainWindow::saveCustomData()
@@ -69,6 +76,7 @@ void MainWindow::readCustomData()
 
 bool MainWindow::process(const QString &fileName)
 {
+	m_break = false;
 	QFile file(fileName);
 
 
@@ -78,20 +86,29 @@ bool MainWindow::process(const QString &fileName)
 		return false;
 	}
 
-	QString content;
-
 	QProgressBar *pprogressBar = new QProgressBar(NULL);
 	pprogressBar -> setWindowTitle("Opening...");
 	pprogressBar -> setMinimum(0);
-	pprogressBar -> setMaximum(file.size());
+	pprogressBar -> setMaximum(file.size() / 1024);
 	pprogressBar -> setValue(0);
 
 	Qt::WindowFlags flags = pprogressBar -> windowFlags();
 
 	pprogressBar -> show();
 
+	QTreeWidget *ptreeWidget= new QTreeWidget();
+
+	ptreeWidget -> header() -> close();
+
+	bool res = true;
 	for(;file.bytesAvailable() >= GST_DP_HEADER_LENGTH;)
 	{
+		if(m_break)
+		{
+			res = false;
+			break;
+		}
+
 		guint8 header[GST_DP_HEADER_LENGTH];
 		qint64 readed = file.read((char *) header, GST_DP_HEADER_LENGTH);
 		if(readed != GST_DP_HEADER_LENGTH || !gst_dp_validate_header (GST_DP_HEADER_LENGTH, header))
@@ -112,6 +129,8 @@ bool MainWindow::process(const QString &fileName)
 			}
 
 		}
+
+		QTreeWidgetItem *pitem = NULL;
 
 		GstDPPayloadType payloadType = gst_dp_header_payload_type(header);
 		if(payloadType == GST_DP_PAYLOAD_BUFFER)
@@ -139,7 +158,7 @@ bool MainWindow::process(const QString &fileName)
 				gst_buffer_unmap(buff, &map);
 			}
 
-			onBuffer(buff, content);
+			pitem = onBuffer(buff);
 			gst_buffer_unref(buff);
 
 		}
@@ -153,14 +172,14 @@ bool MainWindow::process(const QString &fileName)
 				return false;				
 			}
 
-			onCaps(caps, content);
+			pitem = onCaps(caps);
 	        gst_caps_unref(caps);
 		}
 		else if(payloadType >= GST_DP_PAYLOAD_EVENT_NONE)
 		{
 			GstEvent *event = gst_dp_event_from_packet(GST_DP_HEADER_LENGTH, header, payload.data());
 
-			onEvent(event, content);
+			pitem = onEvent(event);
 			gst_event_unref(event);
 		}
 		else
@@ -170,24 +189,26 @@ bool MainWindow::process(const QString &fileName)
 		}
 
 		std::size_t position = file.pos();
-		pprogressBar -> setValue(position);
+		pprogressBar -> setValue(position / 1024);
 		QCoreApplication::processEvents();
 
 		if(!pprogressBar -> isVisible())
 		{
 			return false;
 		}
+
+		if(pitem)
+			ptreeWidget -> addTopLevelItem(pitem);
 	}
-	QLabel *plbl = new QLabel(content);
-	QScrollArea *pscrl = new QScrollArea;
-	pscrl -> setWidget(plbl);
-	setCentralWidget(pscrl);
+
+	if(res)
+		setCentralWidget(ptreeWidget);
 
 
 	pprogressBar -> close();
 	delete pprogressBar;
 
-	return true;
+	return res;
 }
 
 
@@ -225,19 +246,12 @@ void MainWindow::slotAbout()
 }
 
 
-void MainWindow::onBuffer(const GstBuffer *buff, QString &content)
+QTreeWidgetItem *MainWindow::onBuffer(const GstBuffer *buff)
 {
-	content += "<b>Buffer</b><br>"
-				"&nbsp;&nbsp;&nbsp;&nbsp;Timespamp: " + 
-					QString(GST_BUFFER_PTS_IS_VALID(buff) ? QString::number(GST_BUFFER_PTS(buff)) : "not set") + 
-				" | Duration: " + 
-					QString(GST_BUFFER_DURATION_IS_VALID(buff) ? QString::number(GST_BUFFER_DURATION(buff)) : "not set") + 
-				" | Offset: " + 
-					QString(GST_BUFFER_OFFSET_IS_VALID(buff) ? QString::number(GST_BUFFER_OFFSET(buff)) : "not set") + 
-				" | Offset_end: " + 
-					QString(GST_BUFFER_OFFSET_END_IS_VALID(buff) ? QString::number(GST_BUFFER_OFFSET_END(buff)) : "not set") + 
-				"<br>"
-				"&nbsp;&nbsp;&nbsp;&nbsp;Flags: " + QString::number(GST_BUFFER_FLAGS(buff));
+	QString timestamp = GST_BUFFER_PTS_IS_VALID(buff) ? QString::number(GST_BUFFER_PTS(buff)) : "not set";
+	QString duration = GST_BUFFER_DURATION_IS_VALID(buff) ? QString::number(GST_BUFFER_DURATION(buff)) : "not set";
+	QString offset = GST_BUFFER_OFFSET_IS_VALID(buff) ? QString::number(GST_BUFFER_OFFSET(buff)) : "not set";
+	QString offset_end = GST_BUFFER_OFFSET_END_IS_VALID(buff) ? QString::number(GST_BUFFER_OFFSET_END(buff)) : "not set";
 
 	bool none = true;
 	QString flags = "(";
@@ -333,100 +347,121 @@ void MainWindow::onBuffer(const GstBuffer *buff, QString &content)
 	else
 		flags += ")";
 
-	content += " " + flags + "<hr/>";
+
+	QTreeWidgetItem *pitem = new QTreeWidgetItem(QStringList("Buffer: pts = " + timestamp));
+
+	pitem -> addChild(new QTreeWidgetItem(QStringList("timestamp = " + timestamp)));
+	pitem -> addChild(new QTreeWidgetItem(QStringList("duration = " + duration)));
+	pitem -> addChild(new QTreeWidgetItem(QStringList("offset = " + offset)));
+	pitem -> addChild(new QTreeWidgetItem(QStringList("offset_end = " + offset_end)));
+
+	return pitem;
 }
 
-void MainWindow::onEvent(GstEvent *event, QString &content)
+
+QTreeWidgetItem *MainWindow::onEvent(GstEvent *event)
 {
-	content += QString("<b>Event</b><br>") + 
-				"&nbsp;&nbsp;&nbsp;&nbsp;Timespamp: " + 
-					QString(GST_EVENT_TIMESTAMP(event) != GST_CLOCK_TIME_NONE ? QString::number(GST_EVENT_TIMESTAMP(event)) : "not set") + 
-				" | Type: " + GST_EVENT_TYPE_NAME(event);
-	content += "<br>&nbsp;&nbsp;&nbsp;&nbsp;";
+	QString timestamp = GST_EVENT_TIMESTAMP(event) != GST_CLOCK_TIME_NONE ? QString::number(GST_EVENT_TIMESTAMP(event)) : "not set";
+	QString type = GST_EVENT_TYPE_NAME(event);
+
+	QTreeWidgetItem *pitem = new QTreeWidgetItem(QStringList("Event: " + type));
+
+	pitem -> addChild(new QTreeWidgetItem(QStringList("timestamp = " + timestamp)));
+
+
 	if(GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP)
 	{
 		gboolean resetTime;
 		gst_event_parse_flush_stop(event, &resetTime);
-		content += "reset_time = " + QString::number(resetTime);
+
+		pitem -> addChild(new QTreeWidgetItem(QStringList("reset_time = " + QString::number(resetTime))));
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_GAP)
 	{
 		GstClockTime timestamp, duration;
 		gst_event_parse_gap(event, &timestamp, &duration);
-		content += "timestamp = " + QString::number(timestamp) + ", duration = " + QString::number(duration);
+
+		pitem -> addChild(new QTreeWidgetItem(QStringList("timestamp = " + QString::number(timestamp))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("duration = " + QString::number(duration))));
+
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START)
 	{
 		const gchar *streamId;
 		gst_event_parse_stream_start(event, &streamId);
-		content += QString("stream_id = ") + streamId;		
+		pitem -> addChild(new QTreeWidgetItem(QStringList("stream_id = " + QString(streamId))));
+
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT)
 	{
 		const GstSegment *segment;
 		gst_event_parse_segment(event, &segment);
-		content += "flags = ";
+		QString str = "flags = ";
 
 		bool none = true;
 
 		if(segment -> flags == GST_SEGMENT_FLAG_NONE)
-			content += "GST_SEGMENT_FLAG_NONE";
+			str += "GST_SEGMENT_FLAG_NONE";
 		else
 		{
 			if(segment -> flags & GST_SEGMENT_FLAG_RESET)
 			{
-				content += "GST_SEGMENT_FLAG_RESET";
+				str += "GST_SEGMENT_FLAG_RESET";
 				none = false;
 			}
 
 			if(segment -> flags & GST_SEGMENT_FLAG_SKIP)
 			{
 				if(!none)
-					content += " , ";
-				content += "GST_SEGMENT_FLAG_SKIP";
+					str += " , ";
+				str += "GST_SEGMENT_FLAG_SKIP";
 				none = false;
 			}
 
 			if(segment -> flags & GST_SEGMENT_FLAG_SEGMENT)
 			{
 				if(!none)
-					content += " , ";
-				content += "GST_SEGMENT_FLAG_SEGMENT";
+					str += " , ";
+				str += "GST_SEGMENT_FLAG_SEGMENT";
 				none = false;
 			}
 		}
 
-		content += ", rate = " + QString::number(segment -> rate);
-		content += ", applied_rate = " + QString::number(segment -> applied_rate);
-		content += ", format = ";
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("rate = " + QString::number(segment -> rate))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("applied_rate = " + QString::number(segment -> applied_rate))));
+
+
+		str = "format = ";
 
 		if(segment -> format == GST_FORMAT_UNDEFINED)
-			content += "GST_FORMAT_UNDEFINED";
+			str += "GST_FORMAT_UNDEFINED";
 		else if(segment -> format == GST_FORMAT_DEFAULT)
-			content += "GST_FORMAT_DEFAULT";
+			str += "GST_FORMAT_DEFAULT";
 		else if(segment -> format == GST_FORMAT_BYTES)
-			content += "GST_FORMAT_BYTES";
+			str += "GST_FORMAT_BYTES";
 		else if(segment -> format == GST_FORMAT_TIME)
-			content += "GST_FORMAT_TIME";
+			str += "GST_FORMAT_TIME";
 		else if(segment -> format == GST_FORMAT_BUFFERS)
-			content += "GST_FORMAT_BUFFERS";
+			str += "GST_FORMAT_BUFFERS";
 		else if(segment -> format == GST_FORMAT_PERCENT)
-			content += "GST_FORMAT_PERCENT";
+			str += "GST_FORMAT_PERCENT";
 
-		content += ", base = " + QString::number(segment -> base);
-		content += ", offset = " + QString::number(segment -> offset);
-		content += ", start = " + QString::number(segment -> start);
-		content += ", stop = " + QString::number(segment -> stop);
-		content += ", time = " + QString::number(segment -> time);
-		content += ", position = " + QString::number(segment -> position);
-		content += ", duration = " + QString::number(segment -> duration);
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("base = " + QString::number(segment -> base))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("offset = " + QString::number(segment -> offset))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("start = " + QString::number(segment -> start))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("stop = " + QString::number(segment -> stop))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("time = " + QString::number(segment -> time))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("position = " + QString::number(segment -> position))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("duration = " + QString::number(segment -> duration))));
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_TAG)
 	{
 		GstTagList *tags;
 		gst_event_parse_tag(event, &tags);
 		gchar *str = gst_tag_list_to_string(tags);
-		content += QString("tags = ") + str;
+		pitem -> addChild(new QTreeWidgetItem(QStringList("tags = " + (QString)str)));
 		g_free(str);
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_BUFFERSIZE)
@@ -436,24 +471,25 @@ void MainWindow::onEvent(GstEvent *event, QString &content)
 		gboolean async;
 
 		gst_event_parse_buffer_size(event, &format, &minsize, &maxsize, &async);
-		content += "format = ";
+		QString str = "format = ";
 
 		if(format == GST_FORMAT_UNDEFINED)
-			content += "GST_FORMAT_UNDEFINED";
+			str += QString("GST_FORMAT_UNDEFINED");
 		else if(format == GST_FORMAT_DEFAULT)
-			content += "GST_FORMAT_DEFAULT";
+			str += QString("GST_FORMAT_DEFAULT");
 		else if(format == GST_FORMAT_BYTES)
-			content += "GST_FORMAT_BYTES";
+			str += QString("GST_FORMAT_BYTES");
 		else if(format == GST_FORMAT_TIME)
-			content += "GST_FORMAT_TIME";
+			str += QString("GST_FORMAT_TIME");
 		else if(format == GST_FORMAT_BUFFERS)
-			content += "GST_FORMAT_BUFFERS";
+			str += QString("GST_FORMAT_BUFFERS");
 		else if(format == GST_FORMAT_PERCENT)
-			content += "GST_FORMAT_PERCENT";
+			str += QString("GST_FORMAT_PERCENT");
 		
-		content += ", minsize = " + QString::number(minsize);
-		content += ", maxsize = " + QString::number(maxsize);
-		content += QString(", async = ") + (async ? "true" : "false");
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("minsize = " + QString::number(minsize))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("maxsize = " + QString::number(maxsize))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("async = " + (QString)(async ? "true" : "false"))));
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_QOS)
 	{
@@ -464,17 +500,18 @@ void MainWindow::onEvent(GstEvent *event, QString &content)
 
 		gst_event_parse_qos(event, &type, &proportion, &diff, &timestamp);
 
-		content += "type = ";
+		QString str = "type = ";
 		if(type == GST_QOS_TYPE_OVERFLOW)
-			content += "GST_QOS_TYPE_OVERFLOW";
+			str += "GST_QOS_TYPE_OVERFLOW";
 		else if(type == GST_QOS_TYPE_UNDERFLOW)
-			content += "GST_QOS_TYPE_UNDERFLOW";
+			str += "GST_QOS_TYPE_UNDERFLOW";
 		else if(type == GST_QOS_TYPE_THROTTLE)
-			content += "GST_QOS_TYPE_THROTTLE";
+			str += "GST_QOS_TYPE_THROTTLE";
 
-		content == ", proportion = " + QString::number(proportion);
-		content == ", diff = " + QString::number(diff);
-		content == ", timestamp = " + QString::number(timestamp);
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("proportion = " + QString::number(proportion))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("diff = " + QString::number(diff))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("timestamp = " + QString::number(timestamp))));
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_SEEK)
 	{
@@ -487,110 +524,117 @@ void MainWindow::onEvent(GstEvent *event, QString &content)
 
 		gst_event_parse_seek(event, &rate, &format, &flags, &start_type, &start, &stop_type, &stop);
 
-		content += "rate = " + QString::number(rate);
-
-		content += ", format = ";
+		QString str = "format = ";
 		if(format == GST_FORMAT_UNDEFINED)
-			content += "GST_FORMAT_UNDEFINED";
+			str += "GST_FORMAT_UNDEFINED";
 		else if(format == GST_FORMAT_DEFAULT)
-			content += "GST_FORMAT_DEFAULT";
+			str += "GST_FORMAT_DEFAULT";
 		else if(format == GST_FORMAT_BYTES)
-			content += "GST_FORMAT_BYTES";
+			str += "GST_FORMAT_BYTES";
 		else if(format == GST_FORMAT_TIME)
-			content += "GST_FORMAT_TIME";
+			str += "GST_FORMAT_TIME";
 		else if(format == GST_FORMAT_BUFFERS)
-			content += "GST_FORMAT_BUFFERS";
+			str += "GST_FORMAT_BUFFERS";
 		else if(format == GST_FORMAT_PERCENT)
-			content += "GST_FORMAT_PERCENT";
+			str += "GST_FORMAT_PERCENT";
 
-		content += ", flags = ";
+		pitem -> addChild(new QTreeWidgetItem(QStringList("rate = " + QString::number(rate))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+
+		str = "flags = ";
 
 		if(flags == GST_SEEK_FLAG_NONE)
-			content += "GST_SEEK_FLAG_NONE";
+			str += "GST_SEEK_FLAG_NONE";
 		else
 		{
 			bool none = true;
 
 			if(flags & GST_SEEK_FLAG_FLUSH)
 			{
-				content += "GST_SEEK_FLAG_FLUSH";
+				str += "GST_SEEK_FLAG_FLUSH";
 				none = false;
 			}
 
 			if(flags & GST_SEEK_FLAG_ACCURATE)
 			{
 				if(!none)
-					content += ", ";
-				content += "GST_SEEK_FLAG_ACCURATE";
+					str += ", ";
+				str += "GST_SEEK_FLAG_ACCURATE";
 				none = false;
 			}
 
 			if(flags & GST_SEEK_FLAG_KEY_UNIT)
 			{
 				if(!none)
-					content += ", ";
-				content += "GST_SEEK_FLAG_KEY_UNIT";
+					str += ", ";
+				str += "GST_SEEK_FLAG_KEY_UNIT";
 				none = false;
 			}
 
 			if(flags & GST_SEEK_FLAG_SEGMENT)
 			{
 				if(!none)
-					content += ", ";
-				content += "GST_SEEK_FLAG_SEGMENT";
+					str += ", ";
+				str += "GST_SEEK_FLAG_SEGMENT";
 				none = false;
 			}
 
 			if(flags & GST_SEEK_FLAG_SKIP)
 			{
 				if(!none)
-					content += ", ";
-				content += "GST_SEEK_FLAG_SKIP";
+					str += ", ";
+				str += "GST_SEEK_FLAG_SKIP";
 				none = false;
 			}
 
 			if(flags & GST_SEEK_FLAG_SNAP_BEFORE)
 			{
 				if(!none)
-					content += ", ";
-				content += "GST_SEEK_FLAG_SNAP_BEFORE";
+					str += ", ";
+				str += "GST_SEEK_FLAG_SNAP_BEFORE";
 				none = false;
 			}
 
 			if(flags & GST_SEEK_FLAG_SNAP_AFTER)
 			{
 				if(!none)
-					content += ", ";
-				content += "GST_SEEK_FLAG_SNAP_AFTER";
+					str += ", ";
+				str += "GST_SEEK_FLAG_SNAP_AFTER";
 				none = false;
 			}
 		}
 
-		content += ", start_type = ";
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+
+		str = "start_type = ";
 		if(start_type == GST_SEEK_TYPE_NONE)
-			content += "GST_SEEK_TYPE_NONE";
+			str += "GST_SEEK_TYPE_NONE";
 		else if(start_type == GST_SEEK_TYPE_SET)
-			content += "GST_SEEK_TYPE_SET";
+			str += "GST_SEEK_TYPE_SET";
 		else if(start_type == GST_SEEK_TYPE_END)
-			content += "GST_SEEK_TYPE_END";
+			str += "GST_SEEK_TYPE_END";
 
-		content += ", start = " + QString::number(start);
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("start = " + QString::number(start))));
 
-		content += ", stop_type = ";
+		str = "stop_type = ";
 		if(stop_type == GST_SEEK_TYPE_NONE)
-			content += "GST_SEEK_TYPE_NONE";
+			str += "GST_SEEK_TYPE_NONE";
 		else if(stop_type == GST_SEEK_TYPE_SET)
-			content += "GST_SEEK_TYPE_SET";
+			str += "GST_SEEK_TYPE_SET";
 		else if(stop_type == GST_SEEK_TYPE_END)
-			content += "GST_SEEK_TYPE_END";
+			str += "GST_SEEK_TYPE_END";
 
-		content += ", stop = " + QString::number(stop);
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+
+		pitem -> addChild(new QTreeWidgetItem(QStringList("stop = " + QString::number(stop))));
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_LATENCY)
 	{
 		GstClockTime latency;
 		gst_event_parse_latency(event, &latency);
-		content += " latency = " + QString::number(latency);		
+
+		pitem -> addChild(new QTreeWidgetItem(QStringList("latency = " + QString::number(latency))));	
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_STEP)
 	{
@@ -601,40 +645,34 @@ void MainWindow::onEvent(GstEvent *event, QString &content)
 
 		gst_event_parse_step(event, &format, &amount, &rate, &flush, &intermediate);
 
-		content += "format = ";
+		QString str = "format = ";
 
 		if(format == GST_FORMAT_UNDEFINED)
-			content += "GST_FORMAT_UNDEFINED";
+			str += "GST_FORMAT_UNDEFINED";
 		else if(format == GST_FORMAT_DEFAULT)
-			content += "GST_FORMAT_DEFAULT";
+			str += "GST_FORMAT_DEFAULT";
 		else if(format == GST_FORMAT_BYTES)
-			content += "GST_FORMAT_BYTES";
+			str += "GST_FORMAT_BYTES";
 		else if(format == GST_FORMAT_TIME)
-			content += "GST_FORMAT_TIME";
+			str += "GST_FORMAT_TIME";
 		else if(format == GST_FORMAT_BUFFERS)
-			content += "GST_FORMAT_BUFFERS";
+			str += "GST_FORMAT_BUFFERS";
 		else if(format == GST_FORMAT_PERCENT)
-			content += "GST_FORMAT_PERCENT";
+			str += "GST_FORMAT_PERCENT";
 
-		content += ", amount = " + QString::number(amount);
-
-		content += ", rate = " + QString::number(rate);
-		if(flush)
-			content += ", flush = true";
-		else
-			content += ", flush = false";
-
-		if(intermediate)
-			content += ", intermediate = true";
-		else
-			content += ", intermediate = false";
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("amount = " + QString::number(amount))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("rate = " + QString::number(rate))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("flush = " + (QString)(flush ? "true" : "false"))));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("intermediate = " + (QString)(intermediate ? "true" : "false"))));
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_SINK_MESSAGE)
 	{
 		GstMessage *msg;
 		gst_event_parse_sink_message(event, &msg);
-		content += QString("message_type = ") + GST_MESSAGE_TYPE_NAME(msg);
+		pitem -> addChild(new QTreeWidgetItem(QStringList("message_type = " + (QString)GST_MESSAGE_TYPE_NAME(msg))));
 		gst_message_unref(msg);
+
 		
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_CAPS)
@@ -642,16 +680,18 @@ void MainWindow::onEvent(GstEvent *event, QString &content)
 		GstCaps *caps;
 		gst_event_parse_caps(event, &caps);
 		gchar *str = gst_caps_to_string(caps);;
-		content += QString("caps = ") + str;
+		pitem -> addChild(new QTreeWidgetItem(QStringList("caps = " + (QString)str)));
 		g_free(str);
+
 	}
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_TOC_SELECT)
 	{
 		gchar *uid;
 		gst_event_parse_toc_select(event, &uid);
-		content += QString("uid = ") + uid;
 
+		pitem -> addChild(new QTreeWidgetItem(QStringList("uid = " + (QString)uid)));
 		g_free(uid);
+
 	}	
 	else if(GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT_DONE)
 	{
@@ -660,32 +700,36 @@ void MainWindow::onEvent(GstEvent *event, QString &content)
 
 		gst_event_parse_segment_done(event, &format, &position);
 		
-		content += "format = ";
+		QString str = "format = ";
 		if(format == GST_FORMAT_UNDEFINED)
-			content += "GST_FORMAT_UNDEFINED";
+			str += "GST_FORMAT_UNDEFINED";
 		else if(format == GST_FORMAT_DEFAULT)
-			content += "GST_FORMAT_DEFAULT";
+			str += "GST_FORMAT_DEFAULT";
 		else if(format == GST_FORMAT_BYTES)
-			content += "GST_FORMAT_BYTES";
+			str += "GST_FORMAT_BYTES";
 		else if(format == GST_FORMAT_TIME)
-			content += "GST_FORMAT_TIME";
+			str += "GST_FORMAT_TIME";
 		else if(format == GST_FORMAT_BUFFERS)
-			content += "GST_FORMAT_BUFFERS";
+			str += "GST_FORMAT_BUFFERS";
 		else if(format == GST_FORMAT_PERCENT)
-			content += "GST_FORMAT_PERCENT";
+			str += "GST_FORMAT_PERCENT";
 
-		content += ", position = " + QString::number(position);
+		pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+		pitem -> addChild(new QTreeWidgetItem(QStringList("position = " + QString::number(position))));
 	}	
 
-	content += "<hr/>";
+	return pitem;
 }
 
-void MainWindow::onCaps(const GstCaps *caps, QString &content)
+QTreeWidgetItem *MainWindow::onCaps(const GstCaps *caps)
 {
+	QTreeWidgetItem *pitem = new QTreeWidgetItem(QStringList("Caps"));
+
 	gchar *str = gst_caps_to_string(caps);
-	content += QString("<b>Caps</b><br>") + 
-				"&nbsp;&nbsp;&nbsp;&nbsp;" + 
-				str + 
-				"<hr/>";
+
+	pitem -> addChild(new QTreeWidgetItem(QStringList(str)));
+
 	g_free (str);
+
+	return pitem;
 }

@@ -3,6 +3,8 @@
 
 #include <QMainWindow>
 #include <QVBoxLayout>
+#include <QTreeWidgetItem>
+#include <QCloseEvent>
 
 #include <gst/gstbuffer.h>
 #include <gst/gstevent.h>
@@ -13,7 +15,6 @@ class MainWindow: public QMainWindow
 	Q_OBJECT
 	public:
 		MainWindow(QWidget *parent = 0, Qt::WindowFlags flags = 0);
-		~MainWindow();
 
 	public slots:
 		void slotOpen();
@@ -23,12 +24,16 @@ class MainWindow: public QMainWindow
 	protected:
 	    void saveCustomData();
 	    void readCustomData();
+		virtual void closeEvent(QCloseEvent *);
+
 
 	private:
 		bool process(const QString &fileName);
-		void onBuffer(const GstBuffer *, QString &);
-		void onEvent(GstEvent *, QString &);
-		void onCaps(const GstCaps *, QString &);
+		QTreeWidgetItem *onBuffer(const GstBuffer *);
+		QTreeWidgetItem *onEvent(GstEvent *);
+		QTreeWidgetItem *onCaps(const GstCaps *);
+
+		bool m_break;
 };
 
 

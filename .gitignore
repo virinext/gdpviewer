@@ -2,3 +2,4 @@ Makefile
 *.o
 gdpviewer
 moc_*
+src/version_info.h
