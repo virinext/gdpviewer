@@ -13,6 +13,9 @@ unix {
 	PKGCONFIG += gstreamer-1.0
 }
 
+CONFIG += link_pkgconfig
+PKGCONFIG += gstreamer-1.0
+
 gitinfo.commands = src/verinfo/verinfo.sh src/version src/version_info.h
 gitinfo.target = gitinfo
 QMAKE_EXTRA_TARGETS += gitinfo
