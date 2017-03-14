@@ -113,8 +113,8 @@ bool MainWindow::process(const QString &fileName)
 		qint64 readed = file.read((char *) header, GST_DP_HEADER_LENGTH);
 		if(readed != GST_DP_HEADER_LENGTH || !gst_dp_validate_header (GST_DP_HEADER_LENGTH, header))
 		{
-			QMessageBox::critical(this, "Incorrect file", "1File `" + fileName + "` is incorrect gdp file");
-			return false;
+			QMessageBox::critical(this, "Incorrect file", "File `" + fileName + "` is incorrect gdp file");
+			break;
 		}
 
 		qint64 payloadLength = gst_dp_header_payload_length(header);
@@ -124,8 +124,8 @@ bool MainWindow::process(const QString &fileName)
 			payload.reset(new guint8[payloadLength]);
 			if(file.read((char *) payload.data(), payloadLength) != payloadLength)
 			{
-				QMessageBox::critical(this, "Incorrect file", "2File `" + fileName + "` is incorrect gdp file");
-				return false;
+				QMessageBox::critical(this, "Incorrect file", "File `" + fileName + "` is incorrect gdp file");
+				break;
 			}
 
 		}
@@ -139,16 +139,16 @@ bool MainWindow::process(const QString &fileName)
 
 			if(!buff)
 			{
-				QMessageBox::critical(this, "Incorrect file", "3File `" + fileName + "` is incorrect gdp file");
-				return false;				
+				QMessageBox::critical(this, "Incorrect file", "File `" + fileName + "` is incorrect gdp file");
+				break;				
 			}
 
 			if(payloadLength > 0)
 			{
 				if(!gst_dp_validate_payload(GST_DP_HEADER_LENGTH, header, payload.data()))
 				{
-					QMessageBox::critical(this, "Incorrect file", "4File `" + fileName + "` is incorrect gdp file");
-					return false;
+					QMessageBox::critical(this, "Incorrect file", "File `" + fileName + "` is incorrect gdp file");
+					break;
 				}
 
 				GstMapInfo map;
@@ -168,8 +168,8 @@ bool MainWindow::process(const QString &fileName)
 
 			if(!caps)
 			{
-				QMessageBox::critical(this, "Incorrect file", "5File `" + fileName + "` is incorrect gdp file");
-				return false;				
+				QMessageBox::critical(this, "Incorrect file", "File `" + fileName + "` is incorrect gdp file");
+				break;				
 			}
 
 			pitem = onCaps(caps);
@@ -184,8 +184,8 @@ bool MainWindow::process(const QString &fileName)
 		}
 		else
 		{
-			QMessageBox::critical(this, "Incorrect file", "6File `" + fileName + "` is incorrect gdp file");
-			return false;
+			QMessageBox::critical(this, "Incorrect file", "File `" + fileName + "` is incorrect gdp file");
+			break;
 		}
 
 		std::size_t position = file.pos();
@@ -252,6 +252,7 @@ QTreeWidgetItem *MainWindow::onBuffer(const GstBuffer *buff)
 	QString duration = GST_BUFFER_DURATION_IS_VALID(buff) ? QString::number(GST_BUFFER_DURATION(buff)) : "not set";
 	QString offset = GST_BUFFER_OFFSET_IS_VALID(buff) ? QString::number(GST_BUFFER_OFFSET(buff)) : "not set";
 	QString offset_end = GST_BUFFER_OFFSET_END_IS_VALID(buff) ? QString::number(GST_BUFFER_OFFSET_END(buff)) : "not set";
+	QString size = QString::number(gst_buffer_get_size((GstBuffer *)buff));
 
 	bool none = true;
 	QString flags = "(";
@@ -352,7 +353,9 @@ QTreeWidgetItem *MainWindow::onBuffer(const GstBuffer *buff)
 
 	pitem -> addChild(new QTreeWidgetItem(QStringList("timestamp = " + timestamp)));
 	pitem -> addChild(new QTreeWidgetItem(QStringList("duration = " + duration)));
+	pitem -> addChild(new QTreeWidgetItem(QStringList("size = " + size)));
 	pitem -> addChild(new QTreeWidgetItem(QStringList("offset = " + offset)));
+	pitem -> addChild(new QTreeWidgetItem(QStringList("offset_end = " + offset_end)));
 	pitem -> addChild(new QTreeWidgetItem(QStringList("offset_end = " + offset_end)));
 
 	return pitem;
